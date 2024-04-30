@@ -917,7 +917,7 @@ class Converter(object):
                 indent=2,
             )
 
-    def convert_to_yolov5(
+    def convert_to_yolo(
         self,
         input_data,
         output_dir,
@@ -926,7 +926,7 @@ class Converter(object):
         is_dir=True,
         split_labelers=False,
     ):
-        """Convert data in a specific format to the YOLOv5 format.
+        """Convert data in a specific format to the YOLO format.
 
         Parameters
         ----------
@@ -934,12 +934,16 @@ class Converter(object):
             The input data, either a directory or a JSON file.
         output_dir : str
             The directory to store the output files in.
+        output_image_dir : str, optional
+            The directory to store the image files in. If not provided, it will default to a subdirectory called 'images' in output_dir.
+        output_label_dir : str, optional
+            The directory to store the label files in. If not provided, it will default to a subdirectory called 'labels' in output_dir.
         is_dir : bool, optional
             A boolean indicating whether `input_data` is a directory (True) or a JSON file (False).
         split_labelers : bool, optional
             A boolean indicating whether to create a dedicated subfolder for each labeler in the output label directory.
         """
-        self._check_format(Format.YOLO_V5)
+        self._check_format(Format.YOLO)
         ensure_dir(output_dir)
         
         if output_image_dir is not None:
@@ -951,90 +955,133 @@ class Converter(object):
             ensure_dir(output_label_dir)
         else:
             output_label_dir = os.path.join(output_dir, 'labels')
-            os.makedirs(output_label_dir, exist_ok=True) 
-        
+            os.makedirs(output_label_dir, exist_ok=True)
         categories, category_name_to_id = self._get_labels()
-
         data_key = self._data_keys[0]
         item_iterator = (
             self.iter_from_dir(input_data)
             if is_dir
             else self.iter_from_json_file(input_data)
         )
-
-        images, labels = [], []
-
         for item_idx, item in enumerate(item_iterator):
+            # get image path and label file path
             image_path = item['input'][data_key]
-            image_filename = os.path.basename(image_path)
-            image_id = os.path.splitext(image_filename)[0]
-
-            print(f"Processing image {image_filename} ({image_id})...")
-
+            # download image
             if not os.path.exists(image_path):
                 try:
                     image_path = download(
                         image_path,
-                        output_dir,
+                        output_image_dir,
                         project_dir=self.project_dir,
                         return_relative_path=True,
                         upload_dir=self.upload_dir,
                         download_resources=self.download_resources,
                     )
-                except Exception as e:
+                except:
                     logger.info(
-                        f'Unable to download {image_path}. The item {item} will be skipped: {e}',
+                        'Unable to download {image_path}. The item {item} will be skipped'.format(
+                            image_path=image_path, item=item
+                        ),
                         exc_info=True,
+                    )
+
+            # create dedicated subfolder for each labeler if split_labelers=True
+            labeler_subfolder = str(item['completed_by']) if split_labelers else ''
+            os.makedirs(
+                os.path.join(output_label_dir, labeler_subfolder), exist_ok=True
+            )
+
+            # identify label file path
+            filename = os.path.splitext(os.path.basename(image_path))[0]
+            filename = filename[
+                0 : 255 - 4
+            ]  # urls might be too long, use 255 bytes (-4 for .txt) limit for filenames
+            label_path = os.path.join(
+                output_label_dir, labeler_subfolder, filename + '.txt'
+            )
+
+            # Skip tasks without annotations
+            if not item['output']:
+                logger.warning('No completions found for item #' + str(item_idx))
+                if not os.path.exists(label_path):
+                    with open(label_path, 'x'):
+                        pass
+                continue
+
+            # concatenate results over all tag names
+            labels = []
+            for key in item['output']:
+                labels += item['output'][key]
+
+            if len(labels) == 0:
+                logger.warning(f'Empty bboxes for {item["output"]}')
+                if not os.path.exists(label_path):
+                    with open(label_path, 'x'):
+                        pass
+                continue
+
+            annotations = []
+            for label in labels:
+                category_name = None
+                category_names = []  # considering multi-label
+                for key in ['rectanglelabels', 'polygonlabels', 'labels']:
+                    if key in label and len(label[key]) > 0:
+                        # change to save multi-label
+                        for category_name in label[key]:
+                            category_names.append(category_name)
+
+                if len(category_names) == 0:
+                    logger.debug(
+                        "Unknown label type or labels are empty: " + str(label)
                     )
                     continue
 
-            labeler_subfolder = str(item['completed_by']) if split_labelers else ''
+                for category_name in category_names:
+                    if category_name not in category_name_to_id:
+                        category_id = len(categories)
+                        category_name_to_id[category_name] = category_id
+                        categories.append({'id': category_id, 'name': category_name})
+                    category_id = category_name_to_id[category_name]
 
-            filename = os.path.splitext(image_path)[0]
-            label_path = os.path.join(
-                output_dir, labeler_subfolder, 'labels', image_id + '.txt'
-            )
+                    if (
+                        "rectanglelabels" in label
+                        or 'rectangle' in label
+                        or 'labels' in label
+                    ):
+                        xywh = self.rotated_rectangle(label)
+                        if xywh is None:
+                            continue
 
-            if not item['output']:
-                logger.warning(f'No completions found for item #{item_idx}')
-                continue
-
-            labels_info = []
-            for label_type, label_data in item['output'].items():
-                if label_type not in ['rectanglelabels', 'labels']:
-                    continue
-
-                for label in label_data:
-                    if 'rectanglelabels' in label:
-                        for category_name in label['rectanglelabels']:
-                            if category_name not in category_name_to_id:
-                                category_id = len(categories)
-                                category_name_to_id[category_name] = category_id
-                                categories.append({'id': category_id, 'name': category_name})
-                            category_id = category_name_to_id[category_name]
-                            bbox = label['rectanglelabels'][category_name]['rectangle']
-                            x_center = (bbox[0] + bbox[2]) / 2
-                            y_center = (bbox[1] + bbox[3]) / 2
-                            width = bbox[2] - bbox[0]
-                            height = bbox[3] - bbox[1]
-                            labels_info.append((category_id, x_center, y_center, width, height))
-
-            if labels_info:
-                labels.append(labels_info)
-                images.append(image_filename)
-
-                os.makedirs(os.path.join(output_dir, labeler_subfolder, 'labels'), exist_ok=True)
-                with open(label_path, 'w') as f:
-                    for label_info in labels_info:
-                        f.write(' '.join(map(str, label_info)) + '\n')
-
-        print("Writing dataset YAML file...")
-        
+                        x, y, w, h = xywh
+                        annotations.append(
+                            [
+                                category_id,
+                                (x + w / 2) / 100,
+                                (y + h / 2) / 100,
+                                w / 100,
+                                h / 100,
+                            ]
+                        )
+                    elif "polygonlabels" in label or 'polygon' in label:
+                        points_abs = [(x / 100, y / 100) for x, y in label["points"]]
+                        annotations.append(
+                            [category_id]
+                            + [coord for point in points_abs for coord in point]
+                        )
+                    else:
+                        raise ValueError(f"Unknown label type {label}")
+            with open(label_path, 'w') as f:
+                for annotation in annotations:
+                    for idx, l in enumerate(annotation):
+                        if idx == len(annotation) - 1:
+                            f.write(f"{l}\n")
+                        else:
+                            f.write(f"{l} ")
         # Write dataset.yaml
         dataset_yaml_path = os.path.join(output_dir, 'dataset.yaml')
         with open(dataset_yaml_path, 'w') as f:
-            f.write('images: ../images\n')
-            f.write('labels: ../labels\n')
+            f.write('images: ../{output_image_dir}\n')
+            f.write('labels: ../{output_label_dir}\n')
             f.write(f'nc: {len(categories)}\n')
             f.write('names: [')
             for i, category in enumerate(categories):
@@ -1043,7 +1090,7 @@ class Converter(object):
                 f.write(f"'{category['name']}'")
             f.write(']\n\n')
             f.write('info:\n')
-            f.write('  year: datetime.now().year\n')
+            f.write(f"  year: {datetime.now().year}\n")
             f.write('  version: 1.0\n')
 
     @staticmethod
