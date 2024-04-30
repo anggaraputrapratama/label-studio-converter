@@ -1028,31 +1028,13 @@ class Converter(object):
                     for label_info in labels_info:
                         f.write(' '.join(map(str, label_info)) + '\n')
 
-        print("Splitting dataset into train, validation, and test sets...")
-        
-        # Split dataset into train, validation, and test sets
-        train_images, val_test_images = train_test_split(images, test_size=0.3, random_state=42)
-        val_images, test_images = train_test_split(val_test_images, test_size=1/3, random_state=42)
-
-        print("Moving images to respective directories...")
-        
-        # Move images to respective directories
-        for split, split_images in [('train', train_images), ('val', val_images), ('test', test_images)]:
-            split_dir = os.path.join(output_dir, split, 'images')
-            os.makedirs(split_dir, exist_ok=True)
-            for image_filename in split_images:
-                src_image_path = os.path.join(output_image_dir, image_filename)
-                dest_image_path = os.path.join(split_dir, image_filename)
-                copyfile(src_image_path, dest_image_path)
-    
         print("Writing dataset YAML file...")
         
         # Write dataset.yaml
         dataset_yaml_path = os.path.join(output_dir, 'dataset.yaml')
         with open(dataset_yaml_path, 'w') as f:
-            f.write('train: ../train/images\n')
-            f.write('val: ../val/images\n')
-            f.write('test: ../test/images\n\n')
+            f.write('images: ../images\n')
+            f.write('labels: ../labels\n')
             f.write(f'nc: {len(categories)}\n')
             f.write('names: [')
             for i, category in enumerate(categories):
