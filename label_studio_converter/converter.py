@@ -924,7 +924,7 @@ class Converter(object):
         output_image_dir=None,
         output_label_dir=None,
         is_dir=True,
-        split_labelers=False,    
+        split_labelers=False,
     ):
         """Convert data in a specific format to the YOLOv5 format.
 
@@ -939,7 +939,6 @@ class Converter(object):
         split_labelers : bool, optional
             A boolean indicating whether to create a dedicated subfolder for each labeler in the output label directory.
         """
-
         self._check_format(Format.YOLO_V5)
         ensure_dir(output_dir)
         
@@ -970,6 +969,8 @@ class Converter(object):
             image_filename = os.path.basename(image_path)
             image_id = os.path.splitext(image_filename)[0]
 
+            print(f"Processing image {image_filename} ({image_id})...")
+
             if not os.path.exists(image_path):
                 try:
                     image_path = download(
@@ -980,9 +981,9 @@ class Converter(object):
                         upload_dir=self.upload_dir,
                         download_resources=self.download_resources,
                     )
-                except:
+                except Exception as e:
                     logger.info(
-                        f'Unable to download {image_path}. The item {item} will be skipped',
+                        f'Unable to download {image_path}. The item {item} will be skipped: {e}',
                         exc_info=True,
                     )
                     continue
@@ -1027,20 +1028,25 @@ class Converter(object):
                     for label_info in labels_info:
                         f.write(' '.join(map(str, label_info)) + '\n')
 
+        print("Splitting dataset into train, validation, and test sets...")
+        
         # Split dataset into train, validation, and test sets
         train_images, val_test_images = train_test_split(images, test_size=0.3, random_state=42)
         val_images, test_images = train_test_split(val_test_images, test_size=1/3, random_state=42)
 
+        print("Moving images to respective directories...")
+        
         # Move images to respective directories
         for split, split_images in [('train', train_images), ('val', val_images), ('test', test_images)]:
             split_dir = os.path.join(output_dir, split, 'images')
             os.makedirs(split_dir, exist_ok=True)
             for image_filename in split_images:
-                src_image_path = os.path.join(input_data_dir, image_filename)
+                src_image_path = os.path.join(output_image_dir, image_filename)
                 dest_image_path = os.path.join(split_dir, image_filename)
                 copyfile(src_image_path, dest_image_path)
     
-
+        print("Writing dataset YAML file...")
+        
         # Write dataset.yaml
         dataset_yaml_path = os.path.join(output_dir, 'dataset.yaml')
         with open(dataset_yaml_path, 'w') as f:
@@ -1055,10 +1061,9 @@ class Converter(object):
                 f.write(f"'{category['name']}'")
             f.write(']\n\n')
             f.write('info:\n')
-            f.write('  project: project_name\n')
-            f.write('  version: version_number\n')
+            f.write('  year: datetime.now().year\n')
+            f.write('  version: 1.0\n')
 
-    
     @staticmethod
     def rotated_rectangle(label):
         if not (

@@ -4,4 +4,4 @@ try:
 except ModuleNotFoundError as e:
     print(e)
 
-__version__ = '0.0.60.dev'
+__version__ = '0.0.61.dev'
