@@ -10,6 +10,8 @@ import ijson
 import xml.dom
 import xml.dom.minidom
 
+from sklearn.model_selection import train_test_split
+from shutil import copyfile
 from shutil import copy2
 from enum import Enum
 from datetime import datetime
@@ -57,6 +59,7 @@ class Format(Enum):
     ASR_MANIFEST = 10
     YOLO = 11
     CSV_OLD = 12
+    YOLO_V5 = 13    
 
     def __str__(self):
         return self.name
@@ -120,6 +123,13 @@ class Converter(object):
             'the corresponding image file, that is object class, object coordinates, height & width.',
             'link': 'https://labelstud.io/guide/export.html#YOLO',
             'tags': ['image segmentation', 'object detection'],
+        },
+        Format.YOLO_V5: {
+            'title': 'YOLO V5',
+            'description': 'Popular TXT format is created for each image file. Each txt file contains annotations for '
+            'the corresponding image file, that is object class, object coordinates, height & width.',
+            'link': '#',
+            'tags': ['object detection'],
         },
         Format.BRUSH_TO_NUMPY: {
             'title': 'Brush labels to NumPy',
@@ -219,6 +229,16 @@ class Converter(object):
             image_dir = kwargs.get('image_dir')
             label_dir = kwargs.get('label_dir')
             self.convert_to_yolo(
+                input_data,
+                output_data,
+                output_image_dir=image_dir,
+                output_label_dir=label_dir,
+                is_dir=is_dir,
+            )
+        elif format == Format.YOLO_V5:
+            image_dir = kwargs.get('image_dir')
+            label_dir = kwargs.get('label_dir')
+            self.convert_to_yolov5(
                 input_data,
                 output_data,
                 output_image_dir=image_dir,
@@ -897,6 +917,148 @@ class Converter(object):
                 indent=2,
             )
 
+    def convert_to_yolov5(
+        self,
+        input_data,
+        output_dir,
+        output_image_dir=None,
+        output_label_dir=None,
+        is_dir=True,
+        split_labelers=False,    
+    ):
+        """Convert data in a specific format to the YOLOv5 format.
+
+        Parameters
+        ----------
+        input_data : str
+            The input data, either a directory or a JSON file.
+        output_dir : str
+            The directory to store the output files in.
+        is_dir : bool, optional
+            A boolean indicating whether `input_data` is a directory (True) or a JSON file (False).
+        split_labelers : bool, optional
+            A boolean indicating whether to create a dedicated subfolder for each labeler in the output label directory.
+        """
+
+        self._check_format(Format.YOLO_V5)
+        ensure_dir(output_dir)
+        
+        if output_image_dir is not None:
+            ensure_dir(output_image_dir)
+        else:
+            output_image_dir = os.path.join(output_dir, 'images')
+            os.makedirs(output_image_dir, exist_ok=True)
+        if output_label_dir is not None:
+            ensure_dir(output_label_dir)
+        else:
+            output_label_dir = os.path.join(output_dir, 'labels')
+            os.makedirs(output_label_dir, exist_ok=True) 
+        
+        categories, category_name_to_id = self._get_labels()
+
+        data_key = self._data_keys[0]
+        item_iterator = (
+            self.iter_from_dir(input_data)
+            if is_dir
+            else self.iter_from_json_file(input_data)
+        )
+
+        images, labels = [], []
+
+        for item_idx, item in enumerate(item_iterator):
+            image_path = item['input'][data_key]
+            image_filename = os.path.basename(image_path)
+            image_id = os.path.splitext(image_filename)[0]
+
+            if not os.path.exists(image_path):
+                try:
+                    image_path = download(
+                        image_path,
+                        output_dir,
+                        project_dir=self.project_dir,
+                        return_relative_path=True,
+                        upload_dir=self.upload_dir,
+                        download_resources=self.download_resources,
+                    )
+                except:
+                    logger.info(
+                        f'Unable to download {image_path}. The item {item} will be skipped',
+                        exc_info=True,
+                    )
+                    continue
+
+            labeler_subfolder = str(item['completed_by']) if split_labelers else ''
+
+            filename = os.path.splitext(image_path)[0]
+            label_path = os.path.join(
+                output_dir, labeler_subfolder, 'labels', image_id + '.txt'
+            )
+
+            if not item['output']:
+                logger.warning(f'No completions found for item #{item_idx}')
+                continue
+
+            labels_info = []
+            for label_type, label_data in item['output'].items():
+                if label_type not in ['rectanglelabels', 'labels']:
+                    continue
+
+                for label in label_data:
+                    if 'rectanglelabels' in label:
+                        for category_name in label['rectanglelabels']:
+                            if category_name not in category_name_to_id:
+                                category_id = len(categories)
+                                category_name_to_id[category_name] = category_id
+                                categories.append({'id': category_id, 'name': category_name})
+                            category_id = category_name_to_id[category_name]
+                            bbox = label['rectanglelabels'][category_name]['rectangle']
+                            x_center = (bbox[0] + bbox[2]) / 2
+                            y_center = (bbox[1] + bbox[3]) / 2
+                            width = bbox[2] - bbox[0]
+                            height = bbox[3] - bbox[1]
+                            labels_info.append((category_id, x_center, y_center, width, height))
+
+            if labels_info:
+                labels.append(labels_info)
+                images.append(image_filename)
+
+                os.makedirs(os.path.join(output_dir, labeler_subfolder, 'labels'), exist_ok=True)
+                with open(label_path, 'w') as f:
+                    for label_info in labels_info:
+                        f.write(' '.join(map(str, label_info)) + '\n')
+
+        # Split dataset into train, validation, and test sets
+        train_images, val_test_images = train_test_split(images, test_size=0.3, random_state=42)
+        val_images, test_images = train_test_split(val_test_images, test_size=1/3, random_state=42)
+
+        # Move images to respective directories
+        for split, split_images in [('train', train_images), ('val', val_images), ('test', test_images)]:
+            split_dir = os.path.join(output_dir, split, 'images')
+            os.makedirs(split_dir, exist_ok=True)
+            for image_filename in split_images:
+                src_image_path = os.path.join(input_data_dir, image_filename)
+                dest_image_path = os.path.join(split_dir, image_filename)
+                copyfile(src_image_path, dest_image_path)
+    
+
+        # Write dataset.yaml
+        dataset_yaml_path = os.path.join(output_dir, 'dataset.yaml')
+        with open(dataset_yaml_path, 'w') as f:
+            f.write('train: ../train/images\n')
+            f.write('val: ../val/images\n')
+            f.write('test: ../test/images\n\n')
+            f.write(f'nc: {len(categories)}\n')
+            f.write('names: [')
+            for i, category in enumerate(categories):
+                if i > 0:
+                    f.write(', ')
+                f.write(f"'{category['name']}'")
+            f.write(']\n\n')
+            f.write('info:\n')
+            f.write('  project: project_name\n')
+            f.write('  version: version_number\n')
+
+    
     @staticmethod
     def rotated_rectangle(label):
         if not (
