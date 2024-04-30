@@ -917,7 +917,7 @@ class Converter(object):
                 indent=2,
             )
 
-    def convert_to_yolo(
+    def convert_to_yolov5(
         self,
         input_data,
         output_dir,
@@ -943,7 +943,7 @@ class Converter(object):
         split_labelers : bool, optional
             A boolean indicating whether to create a dedicated subfolder for each labeler in the output label directory.
         """
-        self._check_format(Format.YOLO)
+        self._check_format(Format.YOLO_V5)
         ensure_dir(output_dir)
         
         if output_image_dir is not None:
