@@ -1024,7 +1024,7 @@ class Converter(object):
             for label in labels:
                 category_name = None
                 category_names = []  # considering multi-label
-                for key in ['rectanglelabels', 'polygonlabels', 'labels']:
+                for key in ['rectanglelabels', 'labels']:
                     if key in label and len(label[key]) > 0:
                         # change to save multi-label
                         for category_name in label[key]:
@@ -1080,8 +1080,8 @@ class Converter(object):
         # Write dataset.yaml
         dataset_yaml_path = os.path.join(output_dir, 'dataset.yaml')
         with open(dataset_yaml_path, 'w') as f:
-            f.write('images: ../{output_image_dir}\n')
-            f.write('labels: ../{output_label_dir}\n')
+            f.write('images: ../images\n')
+            f.write('labels: ../labels\n')
             f.write(f'nc: {len(categories)}\n')
             f.write('names: [')
             for i, category in enumerate(categories):
